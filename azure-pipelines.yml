@@ -1,0 +1,128 @@
+# https://aka.ms/yaml
+
+trigger:
+- '*'
+
+jobs:
+- job: DotNet
+  displayName: Run unit tests using dotnet.exe
+  strategy:
+    matrix:
+      Windows:
+        operatingSystem: 'Windows'
+        vmImage: 'windows-latest'
+      Linux:
+        operatingSystem: 'Linux'
+        vmImage: 'ubuntu-latest'
+  pool: 
+    vmImage: $(vmImage)
+  steps:
+  
+  # This step is useful for troubleshooting build problems and identifying what variables are available during pipeline development.
+  # Prefer using `task: PowerShell@2` over the `pwsh` alias, because only the former works with the task Azure Pipelines property UI.
+  - task: PowerShell@2
+    # env:
+    #   ${{ each parameter in parameters }}:
+    #     ${{ format('Parameter.{0}', parameter.Key) }}: ${{ parameter.Value }}
+    displayName: 'Print variables'
+    inputs:
+      targetType: 'inline'
+      script: |
+        "All variables"
+        Get-ChildItem env: |
+        Sort-Object Name |
+        Format-Table -AutoSize -Wrap
+      pwsh: true
+      workingDirectory: '$(Pipeline.Workspace)'
+
+  - task: DeleteFiles@1
+    displayName: Delete temp files
+    inputs:
+      SourceFolder: '$(Agent.TempDirectory)'
+      Contents: '**/*'
+    
+  - task: DotNetCoreCLI@2
+    displayName: "dotnet test"
+    inputs:
+      command: 'test'
+      projects: '**/*.csproj'
+      arguments: '--verbosity normal'
+      testRunTitle: 'dotnet test $(operatingSystem)'
+
+  - task: CopyFiles@2
+    inputs:
+      SourceFolder: '$(Agent.TempDirectory)'
+      Contents: '**/*.trx'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)'
+      CleanTargetFolder: true
+      flattenFolders: true
+
+  - task: PublishPipelineArtifact@1
+    displayName: Publish temp files
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)'
+      artifact: 'dotnet-test-$(operatingSystem)'
+      publishLocation: 'pipeline'
+
+- job: VSTest
+  displayName: Run unit tests using vstest.console.exe
+  variables:
+    operatingSystem: 'Windows'
+    vmImage: 'windows-latest'
+  strategy:
+    matrix:
+      Latest:
+        testRunner: 'latest'
+        toolsPlatformVersionSelector: 
+        vsTestVersion: 
+      LatestPreRelease:
+        testRunner: 'latest-prerelease'
+        toolsPlatformVersionSelector: 'latestPreRelease'
+        vsTestVersion: 'toolsInstaller'
+  pool: 
+    vmImage: $(vmImage)
+  steps:
+
+  - task: DotNetCoreCLI@2
+    inputs:
+      command: 'build'
+
+  - task: DeleteFiles@1
+    displayName: Delete temp files
+    inputs:
+      SourceFolder: '$(Agent.TempDirectory)'
+      Contents: '**/*'
+
+  - task: VisualStudioTestPlatformInstaller@1
+    condition: ne(variables['toolsPlatformVersionSelector'], '')
+    inputs:
+      packageFeedSelector: 'nugetOrg'
+      versionSelector: '$(toolsPlatformVersionSelector)'
+
+  - task: VSTest@2
+    inputs:
+      testSelector: 'testAssemblies'
+      testAssemblyVer2: |
+        **\AzureTestCaseName.dll
+        !**\*TestAdapter.dll
+        !**\obj\**
+      searchFolder: '$(System.DefaultWorkingDirectory)'
+      ${{ if ne(variables['vsTestVersion'], '') }}:
+        vsTestVersion: '$(vsTestVersion)'
+      otherConsoleOptions: '/Framework:.NETCoreApp,Version=v3.1'
+      testRunTitle: 'VSTest ($(testRunner) test platform)'
+
+  - task: CopyFiles@2
+    inputs:
+      SourceFolder: '$(Agent.TempDirectory)'
+      Contents: '**/*.trx'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)'
+      CleanTargetFolder: true
+      flattenFolders: true
+
+  - task: PublishPipelineArtifact@1
+    displayName: Publish temp files
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)'
+      artifact: 'VSTest-$(testRunner)-tools-platform'
+      publishLocation: 'pipeline'
